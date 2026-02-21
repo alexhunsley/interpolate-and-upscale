@@ -4,13 +4,14 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  vidpipe.zsh [--interp N] [--width W] [--height H] [--keep] <input_video>
+  vidpipe.zsh [--interp N] [--width W] [--height H] [--scale S] [--keep] <input_video>
 
 Options:
   --interp N     Time factor. >1 slows down (uses RIFE v4 to add frames). <1 speeds up (drops frames; no RIFE). 1 = no change.
                 Examples: 2.0 = 2x slower, 1.5 = 1.5x slower, 0.5 = 2x faster.
-  --width W      Target width for upscaling. If only width or height is provided, the other is computed to preserve AR.
-  --height H     Target height for upscaling.
+  --width W      Target width for resize (up or down). If only width or height is provided, the other is computed to preserve AR.
+  --height H     Target height for resize (up or down).
+  --scale S      Scale factor to multiply input width/height (e.g. 2, 0.5). Mutually exclusive with --width/--height.
   --keep         Keep intermediate folders/files.
 EOF
   exit 2
@@ -19,17 +20,19 @@ EOF
 # ---- Parse args ----
 interp_factor=""
 want_interp=0
-want_upscale=0
+want_resize=0
 keep=0
 up_w=""
 up_h=""
+scale_factor=""
 in=""
 
 while (( $# > 0 )); do
   case "$1" in
     --interp) shift || usage; interp_factor="${1:-}"; [[ -z "$interp_factor" ]] && usage; want_interp=1; shift ;;
-    --width)  shift || usage; up_w="${1:-}"; [[ -z "$up_w" ]] && usage; want_upscale=1; shift ;;
-    --height) shift || usage; up_h="${1:-}"; [[ -z "$up_h" ]] && usage; want_upscale=1; shift ;;
+    --width)  shift || usage; up_w="${1:-}"; [[ -z "$up_w" ]] && usage; want_resize=1; shift ;;
+    --height) shift || usage; up_h="${1:-}"; [[ -z "$up_h" ]] && usage; want_resize=1; shift ;;
+    --scale)  shift || usage; scale_factor="${1:-}"; [[ -z "$scale_factor" ]] && usage; want_resize=1; shift ;;
     --keep) keep=1; shift ;;
     --help|-h) usage ;;
     --*) print -u2 "Error: unknown option: $1"; usage ;;
@@ -40,8 +43,14 @@ done
 [[ -z "$in" ]] && usage
 [[ ! -f "$in" ]] && { print -u2 "Error: input file not found: $in"; exit 2; }
 
-if (( ! want_interp && ! want_upscale )); then
-  print -u2 "Error: you must specify at least one of: --interp N, --width W, --height H"
+# Mutually exclusive: (--width/--height) vs --scale
+if [[ -n "$scale_factor" ]] && ([[ -n "$up_w" ]] || [[ -n "$up_h" ]]); then
+  print -u2 "Error: --scale is mutually exclusive with --width/--height"
+  exit 2
+fi
+
+if (( ! want_interp && ! want_resize )); then
+  print -u2 "Error: you must specify at least one of: --interp N, --width W, --height H, --scale S"
   usage
 fi
 
@@ -63,7 +72,7 @@ need_cmd() {
 need_cmd "$ffmpeg_bin"
 need_cmd "$ffprobe_bin"
 (( want_interp )) && need_cmd "$ffmpeg_bin"
-(( want_upscale )) && need_cmd "$fx_bin"
+(( want_resize )) && need_cmd "$fx_bin"
 
 cleanup_items=()
 cleanup() {
@@ -113,8 +122,24 @@ else:
 PY
 }
 
+compute_scaled_dim() {
+  local in_w="$1" in_h="$2" scale="$3"
+  python3 - <<PY
+import math
+in_w=int("$in_w"); in_h=int("$in_h"); s=float("$scale")
+if s <= 0:
+  raise SystemExit(2)
+def even(x):
+  x=int(round(x))
+  return x if x%2==0 else x+1
+w=even(in_w*s)
+h=even(in_h*s)
+print(f"{max(2,w)} {max(2,h)}")
+PY
+}
+
 build_atempo_chain_value() {
-  local tempo="$1"  # desired atempo, can be outside 0.5..2.0
+  local tempo="$1"
   python3 - <<PY
 t=float("$tempo")
 parts=[]
@@ -142,7 +167,7 @@ print(",".join(parts))
 PY
 }
 
-# Validate interp factor (now allows >0)
+# Validate interp factor (allows >0)
 interp_mode="none"   # none | slow (RIFE) | speed (ffmpeg)
 if (( want_interp )); then
   [[ "$interp_factor" =~ '^[0-9]+([.][0-9]+)?$' ]] || { print -u2 "Error: --interp must be a number (got: $interp_factor)"; exit 2; }
@@ -151,7 +176,6 @@ f=float("$interp_factor")
 import sys
 sys.exit(0 if f>0.0 else 2)
 PY
-  # Decide mode
   interp_mode="$(python3 - <<PY
 f=float("$interp_factor")
 if abs(f-1.0) < 1e-12: print("none")
@@ -164,21 +188,29 @@ PY
   fi
 fi
 
+# Validate scale factor if provided
+if [[ -n "$scale_factor" ]]; then
+  [[ "$scale_factor" =~ '^[0-9]+([.][0-9]+)?$' ]] || { print -u2 "Error: --scale must be a number (got: $scale_factor)"; exit 2; }
+  python3 - <<PY
+s=float("$scale_factor")
+import sys
+sys.exit(0 if s>0.0 else 2)
+PY
+fi
+
 frames_dir="frames_${stem}"
 interp_dir="frames_done_${stem}"
 
 interp_out=""
-input_for_upscale="$in"
+input_for_resize="$in"
 
 # ---- Interp/retime stage ----
 if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
   if [[ "$interp_mode" == "speed" ]]; then
-    # Speed up without increasing FPS (drop frames implicitly via timestamps) + speed audio
     interp_out="${stem}__speed_${interp_factor}x.mp4"
     [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
     cleanup_items+=("$interp_out")
 
-    # factor f<1 => duration shrinks => speed increases by (1/f). Audio tempo must be 1/f.
     audio_tempo="$(python3 - <<PY
 f=float("$interp_factor")
 print(1.0/f)
@@ -199,10 +231,9 @@ PY
         -vf "setpts=PTS*${interp_factor}" \
         -movflags +faststart "$interp_out"
     fi
-    input_for_upscale="$interp_out"
+    input_for_resize="$interp_out"
 
   else
-    # Slow down via RIFE v4 to target frame count
     for d in "$frames_dir" "$interp_dir"; do
       [[ -e "$d" ]] && { print -u2 "Error: refusing to run because path already exists: $d"; exit 1; }
     done
@@ -245,65 +276,69 @@ PY
         -movflags +faststart "$interp_out"
     fi
 
-    input_for_upscale="$interp_out"
+    input_for_resize="$interp_out"
   fi
 fi
 
-# ---- Upscale stage (optional) ----
+# ---- Resize stage (optional) ----
 final_out=""
-if (( want_upscale )); then
-  wh="$(read_vid_wh "$input_for_upscale")"
+if (( want_resize )); then
+  wh="$(read_vid_wh "$input_for_resize")"
   in_w="${wh%x*}"
   in_h="${wh#*x}"
 
-  read up_w_calc up_h_calc <<<"$(compute_missing_dim "$in_w" "$in_h" "$up_w" "$up_h")"
-  up_w="$up_w_calc"
-  up_h="$up_h_calc"
+  if [[ -n "$scale_factor" ]]; then
+    read up_w_calc up_h_calc <<<"$(compute_scaled_dim "$in_w" "$in_h" "$scale_factor")"
+    up_w="$up_w_calc"
+    up_h="$up_h_calc"
+  else
+    read up_w_calc up_h_calc <<<"$(compute_missing_dim "$in_w" "$in_h" "$up_w" "$up_h")"
+    up_w="$up_w_calc"
+    up_h="$up_h_calc"
+  fi
 
   if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
-    # We already created a retimed/interpolated intermediate
-    final_out="${stem}__${interp_mode}_${interp_factor}x__upscaled_${up_w}x${up_h}.mp4"
+    final_out="${stem}__${interp_mode}_${interp_factor}x__scaled_${up_w}x${up_h}.mp4"
   else
-    final_out="${stem}__upscaled_${up_w}x${up_h}.mp4"
+    final_out="${stem}__scaled_${up_w}x${up_h}.mp4"
   fi
 
   [[ -e "$final_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $final_out"; exit 1; }
 
-  print "4) Upscaling video to ${up_w}x${up_h}: $final_out"
-  expected_upscaled="${input_for_upscale:r} Upscaled.mp4"
-  [[ -e "$expected_upscaled" || -e "$final_out" ]] && {
+  print "4) Resizing video to ${up_w}x${up_h}: $final_out"
+  expected_out="${input_for_resize:r} Upscaled.mp4"
+  [[ -e "$expected_out" || -e "$final_out" ]] && {
     print -u2 "Error: refusing to overwrite existing fx-upscale output:"
-    [[ -e "$expected_upscaled" ]] && print -u2 "  $expected_upscaled"
+    [[ -e "$expected_out" ]] && print -u2 "  $expected_out"
     [[ -e "$final_out" ]] && print -u2 "  $final_out"
     exit 1
   }
 
-  "$fx_bin" --width "$up_w" --height "$up_h" "$input_for_upscale"
+  "$fx_bin" --width "$up_w" --height "$up_h" "$input_for_resize"
 
-  [[ -f "$expected_upscaled" ]] || {
-    print -u2 "Error: expected fx-upscale output not found: $expected_upscaled"
+  [[ -f "$expected_out" ]] || {
+    print -u2 "Error: expected fx-upscale output not found: $expected_out"
     print -u2 "Directory listing:"
     ls -la . >&2 || true
     exit 1
   }
 
-  mv "$expected_upscaled" "$final_out"
+  mv "$expected_out" "$final_out"
 else
   final_out="$interp_out"
 fi
 
 if [[ -z "$final_out" ]]; then
-  # If interp was requested but factor==1, no intermediate is created; in that case output is the original.
   if (( want_interp )) && [[ "$interp_mode" == "none" ]]; then
-    print -u2 "Error: --interp 1 makes no change. Specify a factor != 1 and/or use --width/--height."
+    print -u2 "Error: --interp 1 makes no change. Specify a factor != 1 and/or use --width/--height/--scale."
     exit 2
   fi
   print -u2 "Error: internal: no output produced."
   exit 2
 fi
 
-# If we didn't keep intermediates and no upscale was requested, keep the intermediate mp4 (it's the final output)
-if (( ! keep )) && (( want_interp )) && (( ! want_upscale )); then
+# If we didn't keep intermediates and no resize was requested, keep the intermediate mp4 (it's the final output)
+if (( ! keep )) && (( want_interp )) && (( ! want_resize )); then
   cleanup_items=("${(@)cleanup_items:#$final_out}")
 fi
 
