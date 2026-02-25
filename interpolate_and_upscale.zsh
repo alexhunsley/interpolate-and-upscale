@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  vidpipe.zsh [--interp N] [--width W] [--height H] [--scale S] [--keep] <input_video>
+  vidpipe.zsh [--interp N] [--width W] [--height H] [--scale S] [--keep] [--output_dir DIR] <input_video> [<input_video> ...]
 
 Options:
   --interp N     Time factor. >1 slows down (uses RIFE v4 to add frames). <1 speeds up (drops frames; no RIFE). 1 = no change.
@@ -13,6 +13,7 @@ Options:
   --height H     Target height for resize (up or down).
   --scale S      Scale factor to multiply input width/height (e.g. 2, 0.5). Mutually exclusive with --width/--height.
   --keep         Keep intermediate folders/files.
+  --output_dir DIR  Output directory (defaults to each input file's directory).
 EOF
   exit 2
 }
@@ -25,7 +26,8 @@ keep=0
 up_w=""
 up_h=""
 scale_factor=""
-in=""
+output_dir=""
+inputs=()
 
 while (( $# > 0 )); do
   case "$1" in
@@ -34,14 +36,14 @@ while (( $# > 0 )); do
     --height) shift || usage; up_h="${1:-}"; [[ -z "$up_h" ]] && usage; want_resize=1; shift ;;
     --scale)  shift || usage; scale_factor="${1:-}"; [[ -z "$scale_factor" ]] && usage; want_resize=1; shift ;;
     --keep) keep=1; shift ;;
+    --output_dir) shift || usage; output_dir="${1:-}"; [[ -z "$output_dir" ]] && usage; shift ;;
     --help|-h) usage ;;
     --*) print -u2 "Error: unknown option: $1"; usage ;;
-    *) [[ -n "$in" ]] && { print -u2 "Error: multiple input files provided."; usage; }; in="$1"; shift ;;
+    *) inputs+=("$1"); shift ;;
   esac
 done
 
-[[ -z "$in" ]] && usage
-[[ ! -f "$in" ]] && { print -u2 "Error: input file not found: $in"; exit 2; }
+(( ${#inputs[@]} == 0 )) && usage
 
 # Mutually exclusive: (--width/--height) vs --scale
 if [[ -n "$scale_factor" ]] && ([[ -n "$up_w" ]] || [[ -n "$up_h" ]]); then
@@ -82,9 +84,6 @@ cleanup() {
   done
 }
 trap cleanup EXIT
-
-base="${in:t}"
-stem="${base:r}"
 
 read_vid_wh() {
   local file="$1"
@@ -198,149 +197,166 @@ sys.exit(0 if s>0.0 else 2)
 PY
 fi
 
-frames_dir="frames_${stem}"
-interp_dir="frames_done_${stem}"
+process_one() {
+  local in="$1"
 
-interp_out=""
-input_for_resize="$in"
+  [[ -f "$in" ]] || { print -u2 "Error: input file not found: $in"; exit 2; }
 
-# ---- Interp/retime stage ----
-if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
-  if [[ "$interp_mode" == "speed" ]]; then
-    interp_out="${stem}__speed_${interp_factor}x.mp4"
-    [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
-    cleanup_items+=("$interp_out")
+  local out_dir="${output_dir:-${in:h}}"
+  mkdir -p "$out_dir"
 
-    audio_tempo="$(python3 - <<PY
+  local base="${in##*/}"
+  local stem="${base%.*}"
+  stem="${stem//_small_/}"
+
+  local frames_dir="${out_dir}/frames_${stem}"
+  local interp_dir="${out_dir}/frames_done_${stem}"
+
+  local interp_out=""
+  local input_for_resize="$in"
+
+  # ---- Interp/retime stage ----
+  if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
+    if [[ "$interp_mode" == "speed" ]]; then
+      interp_out="${out_dir}/${stem}__speed_${interp_factor}x.mp4"
+      [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
+      cleanup_items+=("$interp_out")
+
+      audio_tempo="$(python3 - <<PY
 f=float("$interp_factor")
 print(1.0/f)
 PY
 )"
-    atempo_chain="$(build_atempo_chain_value "$audio_tempo")"
+      atempo_chain="$(build_atempo_chain_value "$audio_tempo")"
 
-    print "1) Speeding video by factor ${interp_factor} (duration *= ${interp_factor}); audio tempo *= ${audio_tempo}"
-    if "$ffprobe_bin" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$in" | grep -q "audio"; then
-      "$ffmpeg_bin" -i "$in" \
-        -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
-        -vf "setpts=PTS*${interp_factor}" \
-        -filter:a "$atempo_chain" -c:a aac -b:a 192k \
-        -movflags +faststart "$interp_out"
+      print "1) Speeding video by factor ${interp_factor} (duration *= ${interp_factor}); audio tempo *= ${audio_tempo}"
+      if "$ffprobe_bin" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$in" | grep -q "audio"; then
+        "$ffmpeg_bin" -i "$in" \
+          -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
+          -vf "setpts=PTS*${interp_factor}" \
+          -filter:a "$atempo_chain" -c:a aac -b:a 192k \
+          -movflags +faststart "$interp_out"
+      else
+        "$ffmpeg_bin" -i "$in" \
+          -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
+          -vf "setpts=PTS*${interp_factor}" \
+          -movflags +faststart "$interp_out"
+      fi
+      input_for_resize="$interp_out"
+
     else
-      "$ffmpeg_bin" -i "$in" \
-        -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
-        -vf "setpts=PTS*${interp_factor}" \
-        -movflags +faststart "$interp_out"
-    fi
-    input_for_resize="$interp_out"
+      for d in "$frames_dir" "$interp_dir"; do
+        [[ -e "$d" ]] && { print -u2 "Error: refusing to run because path already exists: $d"; exit 1; }
+      done
+      mkdir -p "$frames_dir" "$interp_dir"
+      cleanup_items+=("$frames_dir" "$interp_dir")
 
-  else
-    for d in "$frames_dir" "$interp_dir"; do
-      [[ -e "$d" ]] && { print -u2 "Error: refusing to run because path already exists: $d"; exit 1; }
-    done
-    mkdir -p "$frames_dir" "$interp_dir"
-    cleanup_items+=("$frames_dir" "$interp_dir")
-
-    print "0) Counting frames (needed for exact interpolation like 1.5x)..."
-    in_frames="$(read_vid_frames "$in")"
-    out_frames="$(python3 - <<PY
+      print "0) Counting frames (needed for exact interpolation like 1.5x)..."
+      in_frames="$(read_vid_frames "$in")"
+      out_frames="$(python3 - <<PY
 import math
 n=int("$in_frames"); f=float("$interp_factor")
 m=int(math.floor(n*f + 0.5))
 print(max(1, m))
 PY
 )"
-    (( out_frames >= 2 )) || { print -u2 "Error: computed output frame count too small: $out_frames"; exit 2; }
-    atempo_chain="$(build_atempo_chain_ratio "$in_frames" "$out_frames")"
+      (( out_frames >= 2 )) || { print -u2 "Error: computed output frame count too small: $out_frames"; exit 2; }
+      atempo_chain="$(build_atempo_chain_ratio "$in_frames" "$out_frames")"
 
-    interp_out="${stem}__interpolate_${interp_factor}x.mp4"
-    [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
-    cleanup_items+=("$interp_out")
+      interp_out="${out_dir}/${stem}__interpolate_${interp_factor}x.mp4"
+      [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
+      cleanup_items+=("$interp_out")
 
-    print "1) Splitting video into PNG frames: $frames_dir/"
-    "$ffmpeg_bin" -i "$in" -vsync 0 "${frames_dir}/%08d.png"
+      print "1) Splitting video into PNG frames: $frames_dir/"
+      "$ffmpeg_bin" -i "$in" -vsync 0 "${frames_dir}/%08d.png"
 
-    print "2) Interpolating frames with RIFE model ${rife_model} to target frames ${out_frames} (from ${in_frames}): $interp_dir/"
-    "$rife_bin" -m "$rife_model" -i "${frames_dir}/" -o "${interp_dir}/" -n "$out_frames"
+      print "2) Interpolating frames with RIFE model ${rife_model} to target frames ${out_frames} (from ${in_frames}): $interp_dir/"
+      "$rife_bin" -m "$rife_model" -i "${frames_dir}/" -o "${interp_dir}/" -n "$out_frames"
 
-    print "3) Reassembling interpolated video + retimed audio (atempo: $atempo_chain): $interp_out"
-    if "$ffprobe_bin" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$in" | grep -q "audio"; then
-      "$ffmpeg_bin" -i "${interp_dir}/%08d.png" -i "$in" \
-        -map 0:v:0 -map 1:a:0 \
-        -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
-        -filter:a "$atempo_chain" -c:a aac -b:a 192k \
-        -movflags +faststart "$interp_out"
+      print "3) Reassembling interpolated video + retimed audio (atempo: $atempo_chain): $interp_out"
+      if "$ffprobe_bin" -v error -select_streams a:0 -show_entries stream=codec_type -of default=nw=1:nk=1 "$in" | grep -q "audio"; then
+        "$ffmpeg_bin" -i "${interp_dir}/%08d.png" -i "$in" \
+          -map 0:v:0 -map 1:a:0 \
+          -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
+          -filter:a "$atempo_chain" -c:a aac -b:a 192k \
+          -movflags +faststart "$interp_out"
+      else
+        print "   (No audio stream detected; producing video-only output.)"
+        "$ffmpeg_bin" -i "${interp_dir}/%08d.png" \
+          -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
+          -movflags +faststart "$interp_out"
+      fi
+
+      input_for_resize="$interp_out"
+    fi
+  fi
+
+  # ---- Resize stage (optional) ----
+  final_out=""
+  if (( want_resize )); then
+    wh="$(read_vid_wh "$input_for_resize")"
+    in_w="${wh%x*}"
+    in_h="${wh#*x}"
+
+    if [[ -n "$scale_factor" ]]; then
+      read up_w_calc up_h_calc <<<"$(compute_scaled_dim "$in_w" "$in_h" "$scale_factor")"
+      up_w="$up_w_calc"
+      up_h="$up_h_calc"
     else
-      print "   (No audio stream detected; producing video-only output.)"
-      "$ffmpeg_bin" -i "${interp_dir}/%08d.png" \
-        -c:v libx264 -profile:v high -level 4.2 -pix_fmt yuv420p \
-        -movflags +faststart "$interp_out"
+      read up_w_calc up_h_calc <<<"$(compute_missing_dim "$in_w" "$in_h" "$up_w" "$up_h")"
+      up_w="$up_w_calc"
+      up_h="$up_h_calc"
     fi
 
-    input_for_resize="$interp_out"
-  fi
-fi
+    if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
+      final_out="${out_dir}/${stem}__${interp_mode}_${interp_factor}x__scaled_${up_w}x${up_h}.mp4"
+    else
+      final_out="${out_dir}/${stem}__scaled_${up_w}x${up_h}.mp4"
+    fi
 
-# ---- Resize stage (optional) ----
-final_out=""
-if (( want_resize )); then
-  wh="$(read_vid_wh "$input_for_resize")"
-  in_w="${wh%x*}"
-  in_h="${wh#*x}"
+    [[ -e "$final_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $final_out"; exit 1; }
 
-  if [[ -n "$scale_factor" ]]; then
-    read up_w_calc up_h_calc <<<"$(compute_scaled_dim "$in_w" "$in_h" "$scale_factor")"
-    up_w="$up_w_calc"
-    up_h="$up_h_calc"
+    print "4) Resizing video to ${up_w}x${up_h}: $final_out"
+    expected_out="${out_dir}/${input_for_resize:t:r} Upscaled.mp4"
+    [[ -e "$expected_out" || -e "$final_out" ]] && {
+      print -u2 "Error: refusing to overwrite existing fx-upscale output:"
+      [[ -e "$expected_out" ]] && print -u2 "  $expected_out"
+      [[ -e "$final_out" ]] && print -u2 "  $final_out"
+      exit 1
+    }
+
+    ( cd "$out_dir" && "$fx_bin" --width "$up_w" --height "$up_h" "$input_for_resize" )
+
+    [[ -f "$expected_out" ]] || {
+      print -u2 "Error: expected fx-upscale output not found: $expected_out"
+      print -u2 "Directory listing:"
+      ls -la . >&2 || true
+      exit 1
+    }
+
+    mv "$expected_out" "$final_out"
   else
-    read up_w_calc up_h_calc <<<"$(compute_missing_dim "$in_w" "$in_h" "$up_w" "$up_h")"
-    up_w="$up_w_calc"
-    up_h="$up_h_calc"
+    final_out="$interp_out"
   fi
 
-  if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
-    final_out="${stem}__${interp_mode}_${interp_factor}x__scaled_${up_w}x${up_h}.mp4"
-  else
-    final_out="${stem}__scaled_${up_w}x${up_h}.mp4"
-  fi
-
-  [[ -e "$final_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $final_out"; exit 1; }
-
-  print "4) Resizing video to ${up_w}x${up_h}: $final_out"
-  expected_out="${input_for_resize:r} Upscaled.mp4"
-  [[ -e "$expected_out" || -e "$final_out" ]] && {
-    print -u2 "Error: refusing to overwrite existing fx-upscale output:"
-    [[ -e "$expected_out" ]] && print -u2 "  $expected_out"
-    [[ -e "$final_out" ]] && print -u2 "  $final_out"
-    exit 1
-  }
-
-  "$fx_bin" --width "$up_w" --height "$up_h" "$input_for_resize"
-
-  [[ -f "$expected_out" ]] || {
-    print -u2 "Error: expected fx-upscale output not found: $expected_out"
-    print -u2 "Directory listing:"
-    ls -la . >&2 || true
-    exit 1
-  }
-
-  mv "$expected_out" "$final_out"
-else
-  final_out="$interp_out"
-fi
-
-if [[ -z "$final_out" ]]; then
-  if (( want_interp )) && [[ "$interp_mode" == "none" ]]; then
-    print -u2 "Error: --interp 1 makes no change. Specify a factor != 1 and/or use --width/--height/--scale."
+  if [[ -z "$final_out" ]]; then
+    if (( want_interp )) && [[ "$interp_mode" == "none" ]]; then
+      print -u2 "Error: --interp 1 makes no change. Specify a factor != 1 and/or use --width/--height/--scale."
+      exit 2
+    fi
+    print -u2 "Error: internal: no output produced."
     exit 2
   fi
-  print -u2 "Error: internal: no output produced."
-  exit 2
-fi
 
-# If we didn't keep intermediates and no resize was requested, keep the intermediate mp4 (it's the final output)
-if (( ! keep )) && (( want_interp )) && (( ! want_resize )); then
-  cleanup_items=("${(@)cleanup_items:#$final_out}")
-fi
+  # If we didn't keep intermediates and no resize was requested, keep the intermediate mp4 (it's the final output)
+  if (( ! keep )) && (( want_interp )) && (( ! want_resize )); then
+    cleanup_items=("${(@)cleanup_items:#$final_out}")
+  fi
 
-print "Done."
-print "Output: $final_out"
+  print "Done."
+  print "Output: $final_out"
+}
+
+for in in "${inputs[@]}"; do
+  process_one "$in"
+done
