@@ -202,8 +202,11 @@ fi
 
 process_one() {
   local in="$1"
+  in="${in:A}"
 
   local out_dir="${output_dir:-${in:h}}"
+  out_dir="${out_dir:A}"
+
   mkdir -p "$out_dir"
 
   local base="${in##*/}"
