@@ -227,7 +227,7 @@ process_one() {
   # ---- Interp/retime stage ----
   if (( want_interp )) && [[ "$interp_mode" != "none" ]]; then
     if [[ "$interp_mode" == "speed" ]]; then
-      interp_out="${out_dir}/${stem}__speed_${interp_factor}x.mp4"
+      interp_out="${out_dir}/${stem}__frames_${interp_factor}x.mp4"
       [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
       cleanup_items+=("$interp_out")
 
@@ -272,7 +272,7 @@ PY
       (( out_frames >= 2 )) || { print -u2 "Error: computed output frame count too small: $out_frames"; exit 2; }
       atempo_chain="$(build_atempo_chain_ratio "$in_frames" "$out_frames")"
 
-      interp_out="${out_dir}/${stem}__interpolate_${interp_factor}x.mp4"
+      interp_out="${out_dir}/${stem}__frames_${interp_factor}x.mp4"
       [[ -e "$interp_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $interp_out"; exit 1; }
       cleanup_items+=("$interp_out")
 
