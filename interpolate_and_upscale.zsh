@@ -49,7 +49,7 @@ for in in "${inputs[@]}"; do
 done
 
 # Mutually exclusive: (--width/--height) vs --scale
-if [[ -n "$scale_factor" ]] && ([[ -n "$up_w" ]] || [[ -n "$up_h" ]]); then
+if [[ -n "$scale_factor" ]] && { [[ -n "$up_w" ]] || [[ -n "$up_h" ]]; }; then
   print -u2 "Error: --scale is mutually exclusive with --width/--height"
   exit 2
 fi
@@ -83,7 +83,9 @@ cleanup_items=()
 cleanup() {
   (( keep )) && return 0
   for p in "${cleanup_items[@]}"; do
-    [[ -e "$p" ]] && rm -rf -- "$p" || true
+    if [[ -e "$p" ]]; then
+      rm -rf -- "$p" || true
+    fi
   done
 }
 trap cleanup EXIT
@@ -94,7 +96,8 @@ read_vid_wh() {
   wh="$("$ffprobe_bin" -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file" | head -n 1)"
 
   # Accept "640x480x..." and return only the leading WxH.
-  [[ "$wh" =~ '^([0-9]+)x([0-9]+)' ]] || { print -u2 "Error: failed to probe width/height for: $file"; exit 2; }
+  [[ "$wh" =~ ^([0-9]+)x([0-9]+) ]] || { print -u2 "Error: failed to probe width/height for: $file"; exit 2; }
+  # shellcheck disable=SC2154
   print "${match[1]}x${match[2]}"
 }
 
@@ -102,7 +105,7 @@ read_vid_frames() {
   local file="$1"
   local n
   n="$("$ffprobe_bin" -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nw=1:nk=1 "$file" | head -n 1)"
-  [[ "$n" =~ '^[0-9]+$' ]] || { print -u2 "Error: failed to probe frame count for: $file"; exit 2; }
+  [[ "$n" =~ ^[0-9]+$ ]] || { print -u2 "Error: failed to probe frame count for: $file"; exit 2; }
   print "$n"
 }
 
@@ -174,7 +177,7 @@ PY
 # Validate interp factor (allows >0)
 interp_mode="none"   # none | slow (RIFE) | speed (ffmpeg)
 if (( want_interp )); then
-  [[ "$interp_factor" =~ '^[0-9]+([.][0-9]+)?$' ]] || { print -u2 "Error: --interp must be a number (got: $interp_factor)"; exit 2; }
+  [[ "$interp_factor" =~ ^[0-9]+([.][0-9]+)?$ ]] || { print -u2 "Error: --interp must be a number (got: $interp_factor)"; exit 2; }
   python3 - <<PY
 f=float("$interp_factor")
 import sys
@@ -194,7 +197,7 @@ fi
 
 # Validate scale factor if provided
 if [[ -n "$scale_factor" ]]; then
-  [[ "$scale_factor" =~ '^[0-9]+([.][0-9]+)?$' ]] || { print -u2 "Error: --scale must be a number (got: $scale_factor)"; exit 2; }
+  [[ "$scale_factor" =~ ^[0-9]+([.][0-9]+)?$ ]] || { print -u2 "Error: --scale must be a number (got: $scale_factor)"; exit 2; }
   python3 - <<PY
 s=float("$scale_factor")
 import sys
@@ -305,11 +308,11 @@ PY
     in_h="${wh#*x}"
 
     if [[ -n "$scale_factor" ]]; then
-      read up_w_calc up_h_calc <<<"$(compute_scaled_dim "$in_w" "$in_h" "$scale_factor")"
+      read -r up_w_calc up_h_calc <<<"$(compute_scaled_dim "$in_w" "$in_h" "$scale_factor")"
       up_w="$up_w_calc"
       up_h="$up_h_calc"
     else
-      read up_w_calc up_h_calc <<<"$(compute_missing_dim "$in_w" "$in_h" "$up_w" "$up_h")"
+      read -r up_w_calc up_h_calc <<<"$(compute_missing_dim "$in_w" "$in_h" "$up_w" "$up_h")"
       up_w="$up_w_calc"
       up_h="$up_h_calc"
     fi
@@ -355,7 +358,8 @@ PY
   fi
 
   # If we didn't keep intermediates and no resize was requested, keep the intermediate mp4 (it's the final output)
-  if (( ! keep )) && (( want_interp )) && (( ! want_resize )); then
+  if (( !keep && want_interp && !want_resize )); then
+    # shellcheck disable=SC2296
     cleanup_items=("${(@)cleanup_items:#$final_out}")
   fi
 
