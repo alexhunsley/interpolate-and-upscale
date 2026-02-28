@@ -92,8 +92,10 @@ read_vid_wh() {
   local file="$1"
   local wh
   wh="$("$ffprobe_bin" -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$file" | head -n 1)"
-  [[ "$wh" =~ '^[0-9]+x[0-9]+$' ]] || { print -u2 "Error: failed to probe width/height for: $file"; exit 2; }
-  print "$wh"
+
+  # Accept "640x480x..." and return only the leading WxH.
+  [[ "$wh" =~ '^([0-9]+)x([0-9]+)' ]] || { print -u2 "Error: failed to probe width/height for: $file"; exit 2; }
+  print "${match[1]}x${match[2]}"
 }
 
 read_vid_frames() {
