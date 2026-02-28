@@ -326,7 +326,9 @@ PY
     [[ -e "$final_out" ]] && { print -u2 "Error: refusing to overwrite existing file: $final_out"; exit 1; }
 
     print "4) Resizing video to ${up_w}x${up_h}: $final_out"
-    expected_out="${out_dir}/${input_for_resize:t:r} Upscaled.mp4"
+    fx_out_dir="${input_for_resize:h}"
+    expected_out="${fx_out_dir}/${input_for_resize:t:r} Upscaled.mp4"
+
     [[ -e "$expected_out" || -e "$final_out" ]] && {
       print -u2 "Error: refusing to overwrite existing fx-upscale output:"
       [[ -e "$expected_out" ]] && print -u2 "  $expected_out"
@@ -339,7 +341,7 @@ PY
     [[ -f "$expected_out" ]] || {
       print -u2 "Error: expected fx-upscale output not found: $expected_out"
       print -u2 "Directory listing:"
-      ls -la . >&2 || true
+      ls -la "$fx_out_dir" >&2 || true
       exit 1
     }
 
