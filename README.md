@@ -53,12 +53,12 @@ Usage:
   vidpipe.zsh [--interp N] [--width W] [--height H] [--scale S] [--keep] [--output_dir DIR] <input_video> [<input_video> ...]
 
 Options:
-  --interp N     Time factor. >1 slows down (uses RIFE v4 to add frames). <1 speeds up (drops frames; no RIFE). 1 = no change.
-                Examples: 2.0 = 2x slower, 1.5 = 1.5x slower, 0.5 = 2x faster.
-  --width W      Target width for resize (up or down). If only width or height is provided, the other is computed to preserve AR.
-  --height H     Target height for resize (up or down).
-  --scale S      Scale factor to multiply input width/height (e.g. 2, 0.5). Mutually exclusive with --width/--height.
-  --keep         Keep intermediate folders/files.
+  --interp N        Time factor. >1 slows down (uses RIFE v4 to add frames). <1 speeds up (drops frames; no RIFE). 1 = no change.
+                    Examples: 2.0 = 2x slower, 1.5 = 1.5x slower, 0.5 = 2x faster.
+  --width W         Target width for resize (up or down). If only width or height is provided, the other is computed to preserve AR.
+  --height H        Target height for resize (up or down).
+  --scale S         Scale factor to multiply input width/height (e.g. 2, 0.5). Mutually exclusive with --width/--height.
+  --keep            Keep intermediate folders/files.
   --output_dir DIR  Output directory (defaults to each input file's directory).
 ```
 
