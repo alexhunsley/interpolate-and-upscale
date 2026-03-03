@@ -5,7 +5,7 @@ set -euo pipefail
 usage() {
   cat >&2 <<'EOF'
 Usage:
-  vidpipe.zsh [--interp N] [--width W] [--height H] [--scale S] [--keep] [--output_dir DIR] <input_video> [<input_video> ...]
+  intup.zsh [--interp N] [--width W] [--height H] [--scale S] [--keep] [--output_dir DIR] <input_video> [<input_video> ...]
 
 Options:
   --interp N        Time factor. >1 slows down (uses RIFE v4 to add frames). <1 speeds up (drops frames; no RIFE). 1 = no change.
