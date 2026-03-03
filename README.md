@@ -4,7 +4,7 @@ Helper script for convenient upscale and/or frame interpolation of videos (Mac O
 
 It can handle reduction of resolution and frames (as well as increase, obviously).
 
-Videos produced run at 30fps. This means that frame interpolation multiplier in effect is setting the speed: `-interp 0.5` = half speed video running at 30fps.
+Videos produced run at 30fps. This means that frame interpolation multiplier in effect is setting the speed: `-interp 0.5` = half speed video running at 30fps, assuming input videos are 30fps.
 
 It uses [fx-upscale](https://github.com/searchinglokesh/RIFE-Official) for upscaling and [RIFE](https://github.com/searchinglokesh/RIFE-Official)  for frame interpolation.
 
