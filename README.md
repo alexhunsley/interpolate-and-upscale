@@ -66,10 +66,7 @@ Options:
 
 When you do both interpolation and upscaling this script runs the frame interpolation first. This is probably going to give better results than interpolating a larger source video.
 
-# Future
+# Other platforms
 
-This script could work on Windows with a little fiddling if you have ZSH shell support. Maybe.
-
-Conversion to Python might be a better gambit!
-
+This script uses `fx-upscale` which is Mac OS only (uses Metal API), so options are limited for conversion to other platforms.
 

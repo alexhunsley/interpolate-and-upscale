@@ -1,7 +1,6 @@
 #!/usr/bin/env zsh
 set -euo pipefail
 
-
 usage() {
   cat >&2 <<'EOF'
 Usage:
